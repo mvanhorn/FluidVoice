@@ -1511,7 +1511,10 @@ final class GlobalHotkeyManager: NSObject {
         let expectedModifierKeyCodes = shortcut.normalizedModifierKeyCodes
         if !expectedModifierKeyCodes.isEmpty {
             let pressedModifierKeyCodes = HotkeyShortcut.normalizedModifierKeyCodes(from: Array(self.pressedModifierKeyCodes))
-            if pressedModifierKeyCodes == expectedModifierKeyCodes {
+            if shortcut.matchesModifierOnlyPress(
+                keyCode: keyCode,
+                pressedModifierKeyCodes: self.pressedModifierKeyCodes
+            ) {
                 self.modifierOnlyKeyDown = true
                 self.activeModifierOnlyType = behavior.holdModeType
                 self.otherKeyPressedDuringModifier = false

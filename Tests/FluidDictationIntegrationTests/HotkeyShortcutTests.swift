@@ -242,6 +242,78 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertFalse(unmodifiedSideButton.conflictsWith(optionOnly))
     }
 
+    func testModifierOnlyPressMatchesConfiguredPhysicalModifier() {
+        let leftOption = HotkeyShortcut(keyCode: 58, modifierFlags: [])
+
+        XCTAssertTrue(leftOption.matchesModifierOnlyPress(
+            keyCode: 58,
+            pressedModifierKeyCodes: [58]
+        ))
+    }
+
+    func testModifierOnlyPressRejectsUnrelatedFlagsChangedEvents() {
+        let shortcuts = [
+            HotkeyShortcut(keyCode: 58, modifierFlags: []),
+            HotkeyShortcut(keyCode: 61, modifierFlags: []),
+            HotkeyShortcut(keyCode: 63, modifierFlags: []),
+        ]
+
+        for shortcut in shortcuts {
+            let pressedModifierKeyCodes = Set(shortcut.normalizedModifierKeyCodes)
+            XCTAssertFalse(shortcut.matchesModifierOnlyPress(
+                keyCode: 56,
+                pressedModifierKeyCodes: pressedModifierKeyCodes
+            ))
+            XCTAssertFalse(shortcut.matchesModifierOnlyPress(
+                keyCode: 36,
+                pressedModifierKeyCodes: pressedModifierKeyCodes
+            ))
+        }
+    }
+
+    func testModifierOnlyPressKeepsLeftAndRightOptionDistinct() {
+        let leftOption = HotkeyShortcut(keyCode: 58, modifierFlags: [])
+        let rightOption = HotkeyShortcut(keyCode: 61, modifierFlags: [])
+
+        XCTAssertFalse(leftOption.matchesModifierOnlyPress(
+            keyCode: 61,
+            pressedModifierKeyCodes: [61]
+        ))
+        XCTAssertFalse(rightOption.matchesModifierOnlyPress(
+            keyCode: 58,
+            pressedModifierKeyCodes: [58]
+        ))
+    }
+
+    func testModifierOnlyPressRequiresExactCompletePhysicalModifierSet() {
+        let shortcut = HotkeyShortcut(
+            keyCode: 58,
+            modifierFlags: [],
+            modifierKeyCodes: [58, 63]
+        )
+
+        XCTAssertTrue(shortcut.matchesModifierOnlyPress(
+            keyCode: 58,
+            pressedModifierKeyCodes: [58, 63]
+        ))
+        XCTAssertFalse(shortcut.matchesModifierOnlyPress(
+            keyCode: 58,
+            pressedModifierKeyCodes: [58]
+        ))
+        XCTAssertFalse(shortcut.matchesModifierOnlyPress(
+            keyCode: 56,
+            pressedModifierKeyCodes: [58, 63]
+        ))
+        XCTAssertFalse(shortcut.matchesModifierOnlyPress(
+            keyCode: 58,
+            pressedModifierKeyCodes: [55, 58, 63]
+        ))
+        XCTAssertFalse(shortcut.matchesModifierOnlyPress(
+            keyCode: 58,
+            pressedModifierKeyCodes: [58, 63, 999]
+        ))
+    }
+
     func testPrimaryDictationShortcutsFallbackToLegacyShortcut() throws {
         try self.withRestoredDefaults(keys: [self.legacyHotkeyShortcutKey, self.primaryDictationShortcutsKey]) {
             let legacyShortcut = HotkeyShortcut(keyCode: 12, modifierFlags: [.option])

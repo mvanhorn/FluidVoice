@@ -277,6 +277,22 @@ extension HotkeyShortcut {
         return self.relevantModifierFlags.union(triggerFlag)
     }
 
+    func matchesModifierOnlyPress(keyCode: UInt16, pressedModifierKeyCodes: Set<UInt16>) -> Bool {
+        let expectedModifierKeyCodes = self.normalizedModifierKeyCodes
+        guard self.isModifierOnlyShortcut,
+              expectedModifierKeyCodes.contains(keyCode)
+        else {
+            return false
+        }
+
+        let normalizedPressedModifierKeyCodes = Self.normalizedModifierKeyCodes(from: Array(pressedModifierKeyCodes))
+        guard normalizedPressedModifierKeyCodes.count == pressedModifierKeyCodes.count else {
+            return false
+        }
+
+        return normalizedPressedModifierKeyCodes == expectedModifierKeyCodes
+    }
+
     func matches(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
         guard !self.isMouseShortcut else { return false }
         return keyCode == self.keyCode && modifiers.intersection(Self.relevantModifierMask) == self.relevantModifierFlags
