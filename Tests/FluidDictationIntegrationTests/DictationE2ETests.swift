@@ -75,6 +75,8 @@ final class DictationE2ETests: XCTestCase {
 
     private let verifiedProviderFingerprintsKey = "VerifiedProviderFingerprints"
     private let verifiedPrivateAIModelFingerprintsKey = "VerifiedPrivateAIModelFingerprints"
+    private let promptModeSelectedPromptIDKey = "PromptModeSelectedPromptID"
+    private let secondaryDictationPromptOffKey = "SecondaryDictationPromptOff"
 
     private var punctuationFormattingDefaultsKeys: [String] {
         [
@@ -2185,6 +2187,329 @@ extension DictationE2ETests {
         XCTAssertFalse(SettingsStore.dictationSelectionSupportsAppOverride(.off))
     }
 
+    func testSelectedAppsOnlyOffShortcutUsesBoundCustomPrompt() {
+        self.withSelectedAppRoutingRestored {
+            let settings = SettingsStore.shared
+            let appBundleID = "net.whatsapp.whatsapp"
+            let profile = SettingsStore.DictationPromptProfile(
+                name: "WhatsApp",
+                prompt: "Keep this chat message short and natural.",
+                mode: .dictate
+            )
+            let provider = self.installLocalPromptProvider(settings, model: "whatsapp-model")
+            self.installSelectedAppsBinding(settings, profile: profile, appBundleID: appBundleID, appName: "WhatsApp", promptID: profile.id)
+            settings.selectedProviderID = "openai"
+            settings.selectedModelByProvider = ["openai": "gpt-4.1"]
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: provider.id, modelName: "whatsapp-model"),
+                for: .profile(profile.id)
+            )
+
+            let selection = settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID)
+            let route = DictationProviderRoute.resolve(settings: settings, dictationSlot: .primary, appBundleID: appBundleID)
+
+            XCTAssertEqual(selection, .profile(profile.id))
+            XCTAssertEqual(settings.resolvedDictationPromptProfile(for: .primary, appBundleID: appBundleID)?.id, profile.id)
+            XCTAssertEqual(settings.effectiveDictationPromptBody(for: .primary, appBundleID: appBundleID), profile.prompt)
+            XCTAssertEqual(settings.effectiveDictationSystemPrompt(for: .primary, appBundleID: appBundleID), profile.prompt)
+            XCTAssertTrue(settings.isAppDictationPromptBindingActive(for: .primary, appBundleID: appBundleID))
+            XCTAssertEqual(route.providerID, provider.id)
+            XCTAssertEqual(route.providerKey, "custom:\(provider.id)")
+            XCTAssertEqual(route.model, "whatsapp-model")
+            XCTAssertTrue(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appBundleID))
+            XCTAssertEqual(settings.dictationPromptSelection(for: .primary), .off)
+            XCTAssertEqual(settings.dictationPromptRoutingScope, .selectedAppsOnly)
+            XCTAssertEqual(settings.selectedProviderID, "openai")
+            XCTAssertFalse(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: nil))
+            XCTAssertNotEqual(settings.dictationOverlayLabel(for: .primary, appBundleID: appBundleID), "Basic")
+        }
+    }
+
+    func testSelectedAppsOnlyBoundStopSnapshotUsesAIAndNilTargetSuppressesIt() {
+        self.withSelectedAppRoutingRestored {
+            let settings = SettingsStore.shared
+            let appBundleID = "net.whatsapp.whatsapp"
+            let profile = SettingsStore.DictationPromptProfile(
+                name: "WhatsApp",
+                prompt: "Keep this chat message short and natural.",
+                mode: .dictate
+            )
+            let provider = self.installLocalPromptProvider(settings, model: "whatsapp-model")
+            self.installSelectedAppsBinding(settings, profile: profile, appBundleID: appBundleID, appName: "WhatsApp", promptID: profile.id)
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: provider.id, modelName: "whatsapp-model"),
+                for: .profile(profile.id)
+            )
+            let info = (name: "WhatsApp", bundleId: appBundleID, windowTitle: "Chat")
+            let target = TypingService.RecordingTargetContext(
+                id: UUID(),
+                pid: 42,
+                bundleIdentifier: appBundleID,
+                window: nil,
+                element: nil
+            )
+
+            let snapshot = DictationStopSnapshot.capture(
+                target: target,
+                appInfo: info,
+                slot: .primary,
+                precedingText: ""
+            )
+            let suppressed = DictationStopSnapshot.capture(
+                target: nil,
+                appInfo: info,
+                slot: .primary,
+                precedingText: ""
+            )
+
+            XCTAssertTrue(snapshot.usesAI)
+            XCTAssertEqual(snapshot.route.providerID, provider.id)
+            XCTAssertEqual(snapshot.route.model, "whatsapp-model")
+            XCTAssertEqual(snapshot.systemPrompt, profile.prompt)
+            XCTAssertFalse(suppressed.usesAI)
+            XCTAssertNil(suppressed.target)
+        }
+    }
+
+    func testSelectedAppsOnlyUnboundAppsStayBasic() {
+        self.withSelectedAppRoutingRestored {
+            let settings = SettingsStore.shared
+            let appBundleID = "net.whatsapp.whatsapp"
+            let profile = SettingsStore.DictationPromptProfile(
+                name: "WhatsApp",
+                prompt: "Keep this chat message short and natural.",
+                mode: .dictate
+            )
+            let provider = self.installLocalPromptProvider(settings, model: "whatsapp-model")
+            self.installSelectedAppsBinding(settings, profile: profile, appBundleID: appBundleID, appName: "WhatsApp", promptID: profile.id)
+            settings.selectedProviderID = provider.id
+            settings.selectedModelByProvider = ["custom:\(provider.id)": "whatsapp-model"]
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: provider.id, modelName: "whatsapp-model"),
+                for: .profile(profile.id)
+            )
+
+            self.assertBasicSelectedAppsRoute(settings, appBundleID: "com.apple.notes")
+            self.assertBasicSelectedAppsRoute(settings, appBundleID: nil)
+            self.assertBasicSelectedAppsRoute(settings, appBundleID: "   ")
+
+            settings.appPromptBindings = []
+
+            self.assertBasicSelectedAppsRoute(settings, appBundleID: appBundleID)
+            XCTAssertFalse(DictationAIPostProcessingGate.isConfigured(for: .primary))
+        }
+    }
+
+    func testSelectedAppsOnlyManualChoiceWinsAndSlotsStayIsolated() {
+        self.withSelectedAppRoutingRestored {
+            let settings = SettingsStore.shared
+            let session = DictationAppSession.shared
+            let appBundleID = "net.whatsapp.whatsapp"
+            let bound = SettingsStore.DictationPromptProfile(
+                name: "WhatsApp",
+                prompt: "Bound app prompt.",
+                mode: .dictate
+            )
+            let manual = SettingsStore.DictationPromptProfile(
+                name: "Temporary",
+                prompt: "Temporary visit prompt.",
+                mode: .dictate
+            )
+            let provider = self.installLocalPromptProvider(settings, model: "bound-model")
+            settings.dictationPromptProfiles = [bound, manual]
+            settings.appPromptBindings = [
+                SettingsStore.AppPromptBinding(
+                    mode: .dictate,
+                    appBundleID: appBundleID,
+                    appName: "WhatsApp",
+                    promptID: bound.id
+                ),
+            ]
+            settings.defaultDictationPromptOverride = nil
+            settings.dictationPromptRoutingScope = .selectedAppsOnly
+            settings.setDictationPromptSelection(.off, for: .primary)
+            settings.setDictationPromptSelection(.off, for: .secondary)
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: provider.id, modelName: "bound-model"),
+                for: .profile(bound.id)
+            )
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: provider.id, modelName: "manual-model"),
+                for: .profile(manual.id)
+            )
+            session.activate(appBundleID)
+
+            session.select(.off, slot: .primary, appID: appBundleID)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .off)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .secondary, appBundleID: appBundleID), .profile(bound.id))
+            XCTAssertFalse(settings.isAppDictationPromptBindingActive(for: .primary, appBundleID: appBundleID))
+            XCTAssertTrue(settings.isAppDictationPromptBindingActive(for: .secondary, appBundleID: appBundleID))
+            XCTAssertEqual(settings.effectiveDictationSystemPrompt(for: .primary, appBundleID: appBundleID), "")
+            XCTAssertFalse(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appBundleID))
+            XCTAssertEqual(settings.dictationPromptSelection(for: .primary), .off)
+            XCTAssertEqual(settings.dictationPromptSelection(for: .secondary), .off)
+
+            session.select(.profile(manual.id), slot: .primary, appID: appBundleID)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .profile(manual.id))
+            XCTAssertEqual(settings.effectiveDictationPromptBody(for: .primary, appBundleID: appBundleID), manual.prompt)
+            XCTAssertEqual(settings.effectiveDictationSystemPrompt(for: .primary, appBundleID: appBundleID), manual.prompt)
+            XCTAssertEqual(
+                DictationProviderRoute.resolve(settings: settings, dictationSlot: .primary, appBundleID: appBundleID).model,
+                "manual-model"
+            )
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .secondary, appBundleID: appBundleID), .profile(bound.id))
+            XCTAssertEqual(settings.effectiveDictationSystemPrompt(for: .secondary, appBundleID: appBundleID), bound.prompt)
+
+            settings.dictationPromptRoutingScope = .allApps
+            session.activate("com.apple.notes")
+            session.activate(appBundleID)
+            settings.setDictationPromptSelection(.off, for: .primary)
+            settings.setDictationPromptSelection(.default, for: .secondary)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .off)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .secondary, appBundleID: appBundleID), .profile(bound.id))
+            XCTAssertFalse(settings.isAppDictationPromptBindingActive(for: .primary, appBundleID: appBundleID))
+            XCTAssertTrue(settings.isAppDictationPromptBindingActive(for: .secondary, appBundleID: appBundleID))
+        }
+    }
+
+    func testAllAppsGlobalOffAndExplicitProfilesIgnoreAppBindings() {
+        self.withSelectedAppRoutingRestored {
+            let settings = SettingsStore.shared
+            let appBundleID = "net.whatsapp.whatsapp"
+            let global = SettingsStore.DictationPromptProfile(
+                name: "Global",
+                prompt: "Global dictation prompt.",
+                mode: .dictate
+            )
+            let bound = SettingsStore.DictationPromptProfile(
+                name: "WhatsApp",
+                prompt: "Bound app prompt.",
+                mode: .dictate
+            )
+            let provider = self.installLocalPromptProvider(settings)
+            settings.dictationPromptProfiles = [global, bound]
+            settings.appPromptBindings = [
+                SettingsStore.AppPromptBinding(
+                    mode: .dictate,
+                    appBundleID: appBundleID,
+                    appName: "WhatsApp",
+                    promptID: bound.id
+                ),
+            ]
+            settings.defaultDictationPromptOverride = nil
+            settings.dictationPromptRoutingScope = .allApps
+            settings.selectedProviderID = "openai"
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: provider.id, modelName: "fixture-model"),
+                for: .profile(bound.id)
+            )
+
+            settings.setDictationPromptSelection(.off, for: .primary)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .off)
+            XCTAssertFalse(settings.isAppDictationPromptBindingActive(for: .primary, appBundleID: appBundleID))
+            XCTAssertEqual(settings.effectiveDictationPromptBody(for: .primary, appBundleID: appBundleID), "")
+            XCTAssertFalse(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appBundleID))
+            XCTAssertTrue(
+                DictationProviderRoute.resolve(settings: settings, dictationSlot: .primary, appBundleID: appBundleID).providerID.isEmpty
+            )
+
+            settings.setDictationPromptSelection(.default, for: .primary)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .profile(bound.id))
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: "com.apple.notes"), .default)
+            XCTAssertTrue(settings.isAppDictationPromptBindingActive(for: .primary, appBundleID: appBundleID))
+            XCTAssertEqual(settings.effectiveDictationSystemPrompt(for: .primary, appBundleID: appBundleID), bound.prompt)
+
+            settings.setDictationPromptSelection(.privateAI, for: .primary)
+            let privateSelection = settings.dictationPromptSelection(for: .primary)
+            XCTAssertTrue(privateSelection == .privateAI || privateSelection == .default)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .profile(bound.id))
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: "com.apple.notes"), privateSelection)
+
+            settings.setDictationPromptSelection(.profile(global.id), for: .primary)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .profile(global.id))
+            XCTAssertFalse(settings.isAppDictationPromptBindingActive(for: .primary, appBundleID: appBundleID))
+            XCTAssertEqual(settings.effectiveDictationPromptBody(for: .primary, appBundleID: appBundleID), global.prompt)
+            XCTAssertEqual(settings.effectiveDictationSystemPrompt(for: .primary, appBundleID: appBundleID), global.prompt)
+            XCTAssertFalse(SettingsStore.dictationSelectionSupportsAppOverride(.off))
+        }
+    }
+
+    func testSelectedAppsOnlyDefaultAndStaleProfileFallbacksStayOnThatRoute() {
+        self.withSelectedAppRoutingRestored {
+            let settings = SettingsStore.shared
+            let appBundleID = "net.whatsapp.whatsapp"
+            let provider = self.installLocalPromptProvider(settings, model: "default-model")
+            settings.dictationPromptProfiles = []
+            settings.defaultDictationPromptOverride = nil
+            settings.dictationPromptRoutingScope = .selectedAppsOnly
+            settings.selectedProviderID = "openai"
+            settings.selectedModelByProvider = ["openai": "gpt-4.1"]
+            settings.setDictationPromptSelection(.off, for: .primary)
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: provider.id, modelName: "default-model"),
+                for: .default
+            )
+            settings.appPromptBindings = [
+                SettingsStore.AppPromptBinding(
+                    mode: .dictate,
+                    appBundleID: appBundleID,
+                    appName: "WhatsApp",
+                    promptID: nil
+                ),
+            ]
+
+            self.assertDefaultBindingRoute(settings, appBundleID: appBundleID, providerID: provider.id, model: "default-model")
+
+            settings.appPromptBindings = [
+                SettingsStore.AppPromptBinding(
+                    mode: .dictate,
+                    appBundleID: appBundleID,
+                    appName: "WhatsApp",
+                    promptID: "deleted-profile"
+                ),
+            ]
+
+            self.assertDefaultBindingRoute(settings, appBundleID: appBundleID, providerID: provider.id, model: "default-model")
+        }
+    }
+
+    func testSelectedAppsOnlyMissingProviderKeepsTheGateClosed() {
+        self.withSelectedAppRoutingRestored {
+            let settings = SettingsStore.shared
+            let appBundleID = "net.whatsapp.whatsapp"
+            let profile = SettingsStore.DictationPromptProfile(
+                name: "WhatsApp",
+                prompt: "Keep this chat message short and natural.",
+                mode: .dictate
+            )
+            let provider = self.installLocalPromptProvider(settings, model: "global-model")
+            self.installSelectedAppsBinding(settings, profile: profile, appBundleID: appBundleID, appName: "WhatsApp", promptID: profile.id)
+            settings.selectedProviderID = provider.id
+            settings.selectedModelByProvider = ["custom:\(provider.id)": "global-model"]
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: "lmstudio", modelName: "unverified-model"),
+                for: .profile(profile.id)
+            )
+
+            var route = DictationProviderRoute.resolve(settings: settings, dictationSlot: .primary, appBundleID: appBundleID)
+            XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .profile(profile.id))
+            XCTAssertEqual(route.providerID, "lmstudio")
+            XCTAssertEqual(route.model, "unverified-model")
+            XCTAssertNotEqual(route.providerID, provider.id)
+            XCTAssertFalse(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appBundleID))
+
+            settings.setDictationPromptConfiguration(
+                SettingsStore.DictationPromptConfiguration(providerID: "missing-provider", modelName: "missing-model"),
+                for: .profile(profile.id)
+            )
+            route = DictationProviderRoute.resolve(settings: settings, dictationSlot: .primary, appBundleID: appBundleID)
+            XCTAssertEqual(route.providerID, "missing-provider")
+            XCTAssertEqual(route.model, "missing-model")
+            XCTAssertTrue(route.baseURL.isEmpty)
+            XCTAssertFalse(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appBundleID))
+        }
+    }
+
     func testPostProcessingRouteUsesGlobalProviderWithoutAppContext() {
         self.withRestoredDefaults(
             keys: [
@@ -2850,6 +3175,116 @@ extension DictationE2ETests {
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    private func withSelectedAppRoutingRestored(run: () -> Void) {
+        let session = DictationAppSession.shared
+        let previousApp = session.appID
+        self.withRestoredDefaults(
+            keys: [
+                self.dictationPromptProfilesKey,
+                self.appPromptBindingsKey,
+                self.dictationPromptRoutingScopeKey,
+                self.selectedDictationPromptIDKey,
+                self.dictationPromptOffKey,
+                self.promptModeSelectedPromptIDKey,
+                self.secondaryDictationPromptOffKey,
+                self.dictationPromptConfigurationsKey,
+                self.defaultDictationPromptOverrideKey,
+                self.savedProvidersKey,
+                self.selectedProviderIDKey,
+                self.selectedModelByProviderKey,
+                self.verifiedProviderFingerprintsKey,
+            ]
+        ) {
+            defer {
+                session.activate("test.selected-app-routing.finished")
+                session.activate(previousApp ?? "test.selected-app-routing.finished")
+            }
+            run()
+        }
+    }
+
+    private func installLocalPromptProvider(
+        _ settings: SettingsStore,
+        model: String = "fixture-model"
+    ) -> SettingsStore.SavedProvider {
+        let provider = SettingsStore.SavedProvider(
+            id: "selected-app-routing-fixture",
+            name: "Local Fixture",
+            baseURL: "http://127.0.0.1:9/v1",
+            models: [model]
+        )
+        settings.savedProviders = [provider]
+        let providerKey = "custom:\(provider.id)"
+        let apiKey = settings.providerAPIKeys[providerKey] ?? settings.providerAPIKeys[provider.id] ?? ""
+        settings.verifiedProviderFingerprints = [
+            providerKey: DictationAIPostProcessingGate.providerFingerprint(
+                baseURL: provider.baseURL,
+                apiKey: apiKey
+            ) ?? "",
+        ]
+        return provider
+    }
+
+    private func installSelectedAppsBinding(
+        _ settings: SettingsStore,
+        profile: SettingsStore.DictationPromptProfile,
+        appBundleID: String,
+        appName: String,
+        promptID: String?
+    ) {
+        settings.dictationPromptProfiles = [profile]
+        settings.appPromptBindings = [
+            SettingsStore.AppPromptBinding(
+                mode: .dictate,
+                appBundleID: appBundleID,
+                appName: appName,
+                promptID: promptID
+            ),
+        ]
+        settings.defaultDictationPromptOverride = nil
+        settings.dictationPromptRoutingScope = .selectedAppsOnly
+        settings.setDictationPromptSelection(.off, for: .primary)
+        settings.setDictationPromptSelection(.off, for: .secondary)
+    }
+
+    private func assertBasicSelectedAppsRoute(_ settings: SettingsStore, appBundleID: String?) {
+        let route = DictationProviderRoute.resolve(settings: settings, dictationSlot: .primary, appBundleID: appBundleID)
+        XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .off)
+        XCTAssertNil(settings.resolvedDictationPromptProfile(for: .primary, appBundleID: appBundleID))
+        XCTAssertFalse(settings.isAppDictationPromptBindingActive(for: .primary, appBundleID: appBundleID))
+        XCTAssertEqual(settings.effectiveDictationPromptBody(for: .primary, appBundleID: appBundleID), "")
+        XCTAssertEqual(settings.effectiveDictationSystemPrompt(for: .primary, appBundleID: appBundleID), "")
+        XCTAssertEqual(settings.dictationOverlayLabel(for: .primary, appBundleID: appBundleID), "Basic")
+        XCTAssertTrue(route.providerID.isEmpty)
+        XCTAssertTrue(route.model.isEmpty)
+        XCTAssertFalse(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appBundleID))
+    }
+
+    private func assertDefaultBindingRoute(
+        _ settings: SettingsStore,
+        appBundleID: String,
+        providerID: String,
+        model: String
+    ) {
+        let route = DictationProviderRoute.resolve(settings: settings, dictationSlot: .primary, appBundleID: appBundleID)
+        XCTAssertEqual(settings.resolvedDictationPromptSelection(for: .primary, appBundleID: appBundleID), .default)
+        XCTAssertNil(settings.resolvedDictationPromptProfile(for: .primary, appBundleID: appBundleID))
+        XCTAssertTrue(settings.isAppDictationPromptBindingActive(for: .primary, appBundleID: appBundleID))
+        XCTAssertEqual(
+            settings.effectiveDictationPromptBody(for: .primary, appBundleID: appBundleID),
+            SettingsStore.defaultPromptBodyText(for: .dictate)
+        )
+        XCTAssertEqual(
+            settings.effectiveDictationSystemPrompt(for: .primary, appBundleID: appBundleID),
+            SettingsStore.defaultSystemPromptText(for: .dictate)
+        )
+        XCTAssertEqual(route.providerID, providerID)
+        XCTAssertEqual(route.model, model)
+        XCTAssertNotEqual(route.providerID, "openai")
+        XCTAssertTrue(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appBundleID))
+        XCTAssertEqual(settings.dictationPromptSelection(for: .primary), .off)
     }
 
     private func withRestoredDefaults(keys: [String], run: () -> Void) {

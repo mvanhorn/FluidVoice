@@ -735,9 +735,12 @@ final class SettingsStore: ObservableObject {
     func resolvedDictationPromptSelection(for slot: DictationShortcutSlot, appBundleID: String?) -> DictationPromptSelection {
         if let manual = DictationAppSession.shared.choice(for: slot, appID: appBundleID) { return manual }
         let selection = self.dictationPromptSelection(for: slot)
-        guard selection != .off else { return .off }
         let appOnly = self.promptRoutingScope(for: .dictate) == .selectedAppsOnly
-        guard appOnly || Self.dictationSelectionSupportsAppOverride(selection) else { return selection }
+        // Listed-app routing has no global enhancement, so a matching binding applies even when the shortcut is Basic.
+        if !appOnly {
+            guard selection != .off else { return .off }
+            guard Self.dictationSelectionSupportsAppOverride(selection) else { return selection }
+        }
         guard let binding = self.appPromptBinding(for: .dictate, appBundleID: appBundleID) else {
             return appOnly ? .off : selection
         }
@@ -780,7 +783,8 @@ final class SettingsStore: ObservableObject {
     func isAppDictationPromptBindingActive(for slot: DictationShortcutSlot, appBundleID: String?) -> Bool {
         guard DictationAppSession.shared.choice(for: slot, appID: appBundleID) == nil else { return false }
         let selection = self.dictationPromptSelection(for: slot)
-        guard Self.dictationSelectionSupportsAppOverride(selection) else { return false }
+        let appOnly = self.promptRoutingScope(for: .dictate) == .selectedAppsOnly
+        guard appOnly || Self.dictationSelectionSupportsAppOverride(selection) else { return false }
         return self.hasAppPromptBinding(for: .dictate, appBundleID: appBundleID)
     }
 
@@ -1276,7 +1280,11 @@ final class SettingsStore: ObservableObject {
             return self.manualDictationPromptBody(manual, system: false)
         }
         if self.promptRoutingScope(for: .dictate) == .selectedAppsOnly {
-            guard self.dictationPromptSelection(for: slot) != .off else { return "" }
+            if self.dictationPromptSelection(for: slot) == .off,
+               !self.hasAppPromptBinding(for: .dictate, appBundleID: appBundleID)
+            {
+                return ""
+            }
             return self.effectivePromptBody(for: .dictate, appBundleID: appBundleID)
         }
 
@@ -1302,7 +1310,11 @@ final class SettingsStore: ObservableObject {
             return self.manualDictationPromptBody(manual, system: true)
         }
         if self.promptRoutingScope(for: .dictate) == .selectedAppsOnly {
-            guard self.dictationPromptSelection(for: slot) != .off else { return "" }
+            if self.dictationPromptSelection(for: slot) == .off,
+               !self.hasAppPromptBinding(for: .dictate, appBundleID: appBundleID)
+            {
+                return ""
+            }
             return self.effectiveSystemPrompt(for: .dictate, appBundleID: appBundleID)
         }
 
