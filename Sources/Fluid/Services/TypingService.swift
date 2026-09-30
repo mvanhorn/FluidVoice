@@ -115,6 +115,13 @@ final class TypingService {
     }
 
     private static let ghosttyBundleIdentifier = "com.mitchellh.ghostty"
+    /// Microsoft VS Code channels only. Helper processes stay in this family;
+    /// other Electron apps are intentionally excluded.
+    private nonisolated static let visualStudioCodeBundleIdentifiers: Set<String> = [
+        "com.microsoft.VSCode",
+        "com.microsoft.VSCodeExploration",
+        "com.microsoft.VSCodeInsiders",
+    ]
     private static let directInsertionQueue = DispatchQueue(
         label: "com.FluidApp.Fluid.direct-text-insertion",
         qos: .userInitiated
@@ -404,6 +411,98 @@ final class TypingService {
         return nil
     }
 
+    /// App identities considered before Direct Paste posts into the focused field.
+    /// A preferred PID is authoritative, including when its bundle ID is unknown.
+    struct VisualStudioCodeRoutingTarget: Equatable {
+        var hasPreferredTarget: Bool
+        var preferredBundleIdentifier: String?
+        var hasFocusedApplication: Bool
+        var focusedBundleIdentifier: String?
+        var frontmostBundleIdentifier: String?
+    }
+
+    /// Clipboard Paste, Ghostty, and multi-chunk VS Code each already have a
+    /// single-paste delivery path. Short Direct Paste input stays on CGEvents.
+    nonisolated static func usesClipboardDelivery(
+        mode: SettingsStore.TextInsertionMode,
+        isGhosttyTarget: Bool,
+        routesLongVSCodeThroughClipboard: Bool
+    ) -> Bool {
+        mode == .reliablePaste || isGhosttyTarget || routesLongVSCodeThroughClipboard
+    }
+
+    /// Direct Paste posts `cgEventUnicodeChunkSize` UTF-16 units per event and
+    /// does not wait for the receiver. VS Code's integrated terminal drops or
+    /// splits the later chunks, so a longer payload uses one concealed clipboard
+    /// paste instead. That temporarily uses the clipboard even in Direct Paste
+    /// mode; concealment markers and restoration still apply, but not every
+    /// clipboard manager honors the markers. Shorter input and other apps stay
+    /// on the direct path.
+    nonisolated static func routesMultiChunkVisualStudioCodeInputThroughClipboard(
+        utf16Count: Int,
+        target: VisualStudioCodeRoutingTarget
+    ) -> Bool {
+        guard utf16Count > self.cgEventUnicodeChunkSize else { return false }
+        return self.isVisualStudioCodeBundleIdentifier(self.intendedInsertionBundleIdentifier(for: target))
+    }
+
+    private func visualStudioCodeRoutingTarget(preferredTargetPID: pid_t?) -> VisualStudioCodeRoutingTarget {
+        let frontmostBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        if let preferredTargetPID, preferredTargetPID > 0 {
+            return VisualStudioCodeRoutingTarget(
+                hasPreferredTarget: true,
+                preferredBundleIdentifier: NSRunningApplication(processIdentifier: preferredTargetPID)?.bundleIdentifier,
+                hasFocusedApplication: false,
+                focusedBundleIdentifier: nil,
+                frontmostBundleIdentifier: frontmostBundleIdentifier
+            )
+        }
+
+        if let focusedPID = self.getSystemFocusedElementAndPID()?.pid {
+            return VisualStudioCodeRoutingTarget(
+                hasPreferredTarget: false,
+                preferredBundleIdentifier: nil,
+                hasFocusedApplication: true,
+                focusedBundleIdentifier: NSRunningApplication(processIdentifier: focusedPID)?.bundleIdentifier,
+                frontmostBundleIdentifier: frontmostBundleIdentifier
+            )
+        }
+
+        return VisualStudioCodeRoutingTarget(
+            hasPreferredTarget: false,
+            preferredBundleIdentifier: nil,
+            hasFocusedApplication: false,
+            focusedBundleIdentifier: nil,
+            frontmostBundleIdentifier: frontmostBundleIdentifier
+        )
+    }
+
+    private nonisolated static func intendedInsertionBundleIdentifier(
+        for target: VisualStudioCodeRoutingTarget
+    ) -> String? {
+        if target.hasPreferredTarget {
+            return target.preferredBundleIdentifier
+        }
+        if target.hasFocusedApplication {
+            return target.focusedBundleIdentifier
+        }
+        return target.frontmostBundleIdentifier
+    }
+
+    private nonisolated static func isVisualStudioCodeBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return false }
+        if self.visualStudioCodeBundleIdentifiers.contains(bundleIdentifier) {
+            return true
+        }
+        for identifier in self.visualStudioCodeBundleIdentifiers {
+            let helperPrefix = identifier + ".helper"
+            if bundleIdentifier == helperPrefix || bundleIdentifier.hasPrefix(helperPrefix + ".") {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Recovery-only activation. Normal dictation must preserve the destination's focus.
     @discardableResult
     static func activateAppForRecovery(pid: pid_t) -> Bool {
@@ -525,8 +624,21 @@ final class TypingService {
             return result
         }
 
-        let usesClipboard = mode == .reliablePaste ||
-            self.ghosttyTargetPID(preferredTargetPID: preferredTargetPID) != nil
+        let isGhosttyTarget = self.ghosttyTargetPID(preferredTargetPID: preferredTargetPID) != nil
+        let routesLongVSCodeThroughClipboard = Self.routesMultiChunkVisualStudioCodeInputThroughClipboard(
+            utf16Count: text.utf16.count,
+            target: self.visualStudioCodeRoutingTarget(preferredTargetPID: preferredTargetPID)
+        )
+        let usesClipboard = Self.usesClipboardDelivery(
+            mode: mode,
+            isGhosttyTarget: isGhosttyTarget,
+            routesLongVSCodeThroughClipboard: routesLongVSCodeThroughClipboard
+        )
+        if routesLongVSCodeThroughClipboard, mode != .reliablePaste, !isGhosttyTarget {
+            self.bench(
+                "vscode_multi_chunk_clipboard_route utf16=\(text.utf16.count) chunkLimit=\(Self.cgEventUnicodeChunkSize)"
+            )
+        }
         // The read-back baseline costs an AX value read; only the clipboard
         // paths verify, so the direct path skips it.
         var verificationBefore = usesClipboard ? PasteVerifier.capture() : nil
@@ -874,7 +986,7 @@ final class TypingService {
         return true
     }
 
-    private nonisolated static let cgEventUnicodeChunkSize = 200
+    nonisolated static let cgEventUnicodeChunkSize = 200
 
     private nonisolated static func copyAXElementAttribute(from element: AXUIElement, attribute: CFString) -> AXUIElement? {
         var value: CFTypeRef?

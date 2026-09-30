@@ -374,6 +374,80 @@ final class PasteDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(PasteDeliveryCoordinator.defaultSettlementDelayNanoseconds, 500_000_000)
     }
 
+    func testLargeUnicodePayloadIsPostedOnceAndRestoredWhenRetentionIsDisabled() async {
+        let payload = self.longNumberedUnicodeTranscript()
+        let pasteboard = FakePasteboardManager(text: "before")
+        let commandPoster = FakePasteCommandPoster()
+        let coordinator = PasteDeliveryCoordinator(
+            pasteboard: pasteboard,
+            commandPoster: commandPoster,
+            settlementDelayNanoseconds: .max
+        )
+
+        let result = await coordinator.deliver(payload, preserveTranscriptOnClipboard: false)
+
+        XCTAssertEqual(result, .commandPosted)
+        XCTAssertEqual(commandPoster.postCount, 1)
+        XCTAssertEqual(pasteboard.text, payload)
+        XCTAssertTrue(pasteboard.text.hasPrefix("BEGIN 😀"))
+        XCTAssertTrue(pasteboard.text.contains("\n0450 café — 语音 — middle — 0450"))
+        XCTAssertTrue(pasteboard.text.hasSuffix("END ✨"))
+        XCTAssertGreaterThan(pasteboard.text.utf16.count, 200)
+        XCTAssertTrue(pasteboard.isTemporary)
+
+        coordinator.runPendingSettlementForTesting()
+
+        XCTAssertEqual(pasteboard.text, "before")
+        XCTAssertEqual(pasteboard.restoreCount, 1)
+        XCTAssertEqual(commandPoster.postCount, 1)
+        XCTAssertFalse(pasteboard.isTemporary)
+    }
+
+    func testLargeUnicodePayloadStaysAvailableWhenRetentionIsEnabled() async {
+        let payload = self.longNumberedUnicodeTranscript()
+        let pasteboard = FakePasteboardManager(text: "before")
+        let commandPoster = FakePasteCommandPoster()
+        let coordinator = PasteDeliveryCoordinator(
+            pasteboard: pasteboard,
+            commandPoster: commandPoster,
+            settlementDelayNanoseconds: .max
+        )
+
+        let result = await coordinator.deliver(payload, preserveTranscriptOnClipboard: true)
+
+        XCTAssertEqual(result, .commandPosted)
+        XCTAssertEqual(commandPoster.postCount, 1)
+        XCTAssertEqual(pasteboard.text, payload)
+
+        coordinator.runPendingSettlementForTesting()
+
+        XCTAssertEqual(pasteboard.text, payload)
+        XCTAssertEqual(pasteboard.restoreCount, 0)
+        XCTAssertEqual(pasteboard.intentionalWriteCount, 1)
+        XCTAssertFalse(pasteboard.isTemporary)
+        XCTAssertEqual(commandPoster.postCount, 1)
+    }
+
+    func testLargeUnicodePayloadFailureRestoresClipboardWithoutRetryingInsertion() async {
+        let payload = self.longNumberedUnicodeTranscript()
+        let pasteboard = FakePasteboardManager(text: "before")
+        let commandPoster = FakePasteCommandPoster(succeeds: false)
+        let coordinator = PasteDeliveryCoordinator(
+            pasteboard: pasteboard,
+            commandPoster: commandPoster,
+            settlementDelayNanoseconds: .max
+        )
+
+        let result = await coordinator.deliver(payload, preserveTranscriptOnClipboard: false)
+        coordinator.runPendingSettlementForTesting()
+
+        XCTAssertEqual(result, .recoverableFailure(.pasteCommandFailed))
+        XCTAssertEqual(commandPoster.postCount, 1)
+        XCTAssertEqual(pasteboard.text, "before")
+        XCTAssertEqual(pasteboard.restoreCount, 1)
+        XCTAssertFalse(pasteboard.isTemporary)
+    }
+
     func testEveryDeliveryFailureExceptEmptyTextIsVisible() {
         XCTAssertEqual(TextDeliveryFailure.accessibilityNotTrusted.userFacingMessage, "Enable Accessibility to insert text")
         XCTAssertNil(TextDeliveryFailure.emptyText.userFacingMessage)
@@ -439,6 +513,16 @@ final class PasteDeliveryCoordinatorTests: XCTestCase {
         XCTAssertTrue(state.isTextDeliveryFailureVisible)
         XCTAssertEqual(state.textDeliveryFailureMessage, "Enable Accessibility to insert text")
         XCTAssertEqual(state.textDeliveryFailureTranscript, "exact failed output")
+    }
+
+    private func longNumberedUnicodeTranscript(lineCount: Int = 900) -> String {
+        var lines = ["BEGIN 😀"]
+        lines.reserveCapacity(lineCount + 2)
+        for index in 1...lineCount {
+            lines.append(String(format: "%04d café — 语音 — middle — %04d", index, index))
+        }
+        lines.append("END ✨")
+        return lines.joined(separator: "\n")
     }
 
     private func waitUntil(_ condition: @MainActor () -> Bool) async {
