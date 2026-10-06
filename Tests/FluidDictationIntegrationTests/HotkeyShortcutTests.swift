@@ -960,6 +960,57 @@ final class HotkeyShortcutTests: XCTestCase {
     }
 
     @MainActor
+    func testIssue675OrphanedDefaultLeftCommandStyleShortcutIsClearedOnce() throws {
+        try self.withRestoredDefaults(keys: [
+            "DictationPromptConfigurations",
+            "DictationPromptProfiles",
+            "OrphanedDefaultLeftCommandStyleShortcutCleared",
+            self.primaryDictationShortcutsKey,
+            self.legacyHotkeyShortcutKey,
+        ]) {
+            let settings = SettingsStore.shared
+            let leftCommand = HotkeyShortcut(keyCode: 55, modifierFlags: [], modifierKeyCodes: [55])
+            let rightOption = HotkeyShortcut(keyCode: 61, modifierFlags: [], modifierKeyCodes: [61])
+            UserDefaults.standard.set(false, forKey: "OrphanedDefaultLeftCommandStyleShortcutCleared")
+            settings.primaryDictationShortcuts = [rightOption]
+            settings.setDictationPromptConfiguration(.init(shortcut: leftCommand), for: .default)
+            settings.clearOrphanedDefaultLeftCommandStyleShortcutIfNeeded()
+            XCTAssertFalse(settings.dictationPromptShortcutAssignments().contains { $0.shortcut == leftCommand })
+            XCTAssertNil(settings.dictationPromptConfigurations["__default__"])
+            XCTAssertEqual(settings.primaryDictationShortcuts, [rightOption])
+
+            settings.setDictationPromptConfiguration(.init(shortcut: leftCommand), for: .default)
+            settings.clearOrphanedDefaultLeftCommandStyleShortcutIfNeeded()
+            XCTAssertTrue(settings.dictationPromptShortcutAssignments().contains { $0.selection == .default && $0.shortcut == leftCommand })
+
+            UserDefaults.standard.set(false, forKey: "OrphanedDefaultLeftCommandStyleShortcutCleared")
+            settings.setDictationPromptConfiguration(.init(shortcut: leftCommand, providerID: "provider-keep", modelName: "model-keep"), for: .default)
+            settings.clearOrphanedDefaultLeftCommandStyleShortcutIfNeeded()
+            XCTAssertTrue(settings.dictationPromptShortcutAssignments().contains { $0.selection == .default && $0.shortcut == leftCommand })
+            XCTAssertEqual(settings.dictationPromptConfiguration(for: .default).providerID, "provider-keep")
+            XCTAssertEqual(settings.dictationPromptConfiguration(for: .default).modelName, "model-keep")
+
+            UserDefaults.standard.set(false, forKey: "OrphanedDefaultLeftCommandStyleShortcutCleared")
+            let rightControl = HotkeyShortcut(keyCode: 62, modifierFlags: [], modifierKeyCodes: [62])
+            settings.setDictationPromptConfiguration(.init(shortcut: rightControl), for: .default)
+            settings.clearOrphanedDefaultLeftCommandStyleShortcutIfNeeded()
+            XCTAssertTrue(settings.dictationPromptShortcutAssignments().contains { $0.selection == .default && $0.shortcut == rightControl })
+
+            UserDefaults.standard.set(false, forKey: "OrphanedDefaultLeftCommandStyleShortcutCleared")
+            settings.setDictationPromptConfiguration(.init(shortcut: leftCommand), for: .default)
+            settings.setDictationPromptConfiguration(.init(shortcut: leftCommand), for: .privateAI)
+            let profile = SettingsStore.DictationPromptProfile(id: "style-keep", name: "Style", prompt: "Keep this style")
+            settings.dictationPromptProfiles = [profile]
+            settings.setDictationPromptConfiguration(.init(shortcut: leftCommand), for: .profile(profile.id))
+            settings.clearOrphanedDefaultLeftCommandStyleShortcutIfNeeded()
+            let assignments = settings.dictationPromptShortcutAssignments()
+            XCTAssertFalse(assignments.contains { $0.selection == .default })
+            XCTAssertTrue(assignments.contains { $0.selection == .privateAI && $0.shortcut == leftCommand })
+            XCTAssertTrue(assignments.contains { $0.selection == .profile(profile.id) && $0.shortcut == leftCommand })
+        }
+    }
+
+    @MainActor
     func testHeldPrimaryRemovalStopsHoldAndAutomaticWithoutWaitingForOldRelease() async throws {
         for mode in [HotkeyActivationMode.hold, .automatic] {
             let asr = ASRService()

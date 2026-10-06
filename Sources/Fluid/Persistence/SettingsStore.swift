@@ -56,6 +56,7 @@ final class SettingsStore: ObservableObject {
         self.migrateLegacyDictationAIPreferenceIfNeeded()
         self.migrateSecondaryPromptShortcutIfNeeded()
         self.retireLegacySecondaryPromptShortcutIfNeeded()
+        self.clearOrphanedDefaultLeftCommandStyleShortcutIfNeeded()
         self.normalizePromptSelectionsIfNeeded()
         self.purgeRetiredAppleIntelligenceState()
         self.repairForcedOnboardingResetIfNeeded()
@@ -4066,6 +4067,23 @@ final class SettingsStore: ObservableObject {
         self.defaults.set(true, forKey: Keys.legacySecondaryPromptShortcutRetired)
     }
 
+    func clearOrphanedDefaultLeftCommandStyleShortcutIfNeeded() {
+        guard self.defaults.bool(forKey: Keys.orphanedDefaultLeftCommandStyleShortcutCleared) == false else { return }
+
+        self.defaults.set(true, forKey: Keys.orphanedDefaultLeftCommandStyleShortcutCleared)
+        // Reported orphan: modifier-only Left Command (key code 55) with no provider or model.
+        guard let configuration = self.dictationPromptConfigurations["__default__"],
+              let shortcut = configuration.shortcut,
+              shortcut.keyCode == 55,
+              shortcut.modifierKeyCodes == [55],
+              shortcut.modifierFlags.isEmpty,
+              configuration.providerID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+
+        self.setDictationPromptConfiguration(.init(), for: .default)
+    }
+
     private func normalizePromptSelectionsIfNeeded() {
         if self.defaults.object(forKey: Keys.secondaryDictationPromptOff) == nil {
             self.defaults.set(false, forKey: Keys.secondaryDictationPromptOff)
@@ -5892,6 +5910,7 @@ private extension SettingsStore {
         static let secondaryDictationPromptOff = "SecondaryDictationPromptOff"
         static let secondaryPromptShortcutRemoved = "SecondaryPromptShortcutRemoved"
         static let legacySecondaryPromptShortcutRetired = "LegacySecondaryPromptShortcutRetired"
+        static let orphanedDefaultLeftCommandStyleShortcutCleared = "OrphanedDefaultLeftCommandStyleShortcutCleared"
         static let dictationPromptConfigurations = "DictationPromptConfigurations"
 
         // Rewrite Mode Keys
